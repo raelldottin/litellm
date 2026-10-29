@@ -1,11 +1,29 @@
-# NVIDIA NIM fallback chain eval
+# NVIDIA NIM fallback evaluation
 
-`eval_fallback_chain.py` scores NVIDIA NIM chat models on eight auto-graded tasks (instruction following, arithmetic, JSON extraction, tool calling, tool selection, code tracing, ~35k token needle retrieval, logic), repeated `EVAL_REPEATS` times, and ranks them by pass rate, then median latency. It is stdlib only, so it runs inside the LiteLLM Docker image with the key that is already there
+`eval_fallback_chain.py` screens chat models through an OpenAI-compatible endpoint using eight deterministic tasks and two tool-result continuation tasks per trial. It checks exact output, arithmetic, JSON extraction, tool selection, code tracing, long-context retrieval and logic. Generated code is never executed
+
+Use the existing container environment for authentication. Set `EVAL_API_KEY` or `NVIDIA_NIM_API_KEY` without printing its value
 
 ```bash
-docker exec -i -e EVAL_REPEATS=3 <litellm-container> python - < eval_fallback_chain.py
+docker exec -i -e EVAL_REPEATS=3 -e EVAL_WORKERS=1 \
+  -e EVAL_TIMEOUT=300 -e EVAL_MAX_TOKENS=16384 \
+  -e EVAL_OUT=/tmp/fallback_eval_results.json <litellm-container> \
+  python - < eval_fallback_chain.py
 ```
 
-Point `EVAL_BASE_URL` at `http://localhost:4000/v1` and `EVAL_MODELS` at proxy model group names to score the chain through the proxy instead of NVIDIA directly
+`EVAL_MODELS` selects comma-separated API model IDs. `EVAL_BASE_URL` defaults to `https://integrate.api.nvidia.com/v1`. Use the proxy URL and group names to measure routing, but a group can serve a different underlying model through fallback. Each result therefore records the returned model name, which does not necessarily identify an individual deployment
 
-`fallback_chain.draft.yaml` is the starting order taken from published numbers (GLM-5.3-Flash AA index 57, DeepSeek-V4.1-Flash DeepSWE 74 to 77, MiniMax-M3.1-Flash DeepSWE 73.7, Kimi K2.6 SWE-bench Verified 80.2 vendor reported, Nemotron 3 Ultra SWE-bench Verified 70.7, Nemotron 3.5 Lightning as the fast last resort). Gemma 4 31B and Laguna XS 2.1 start outside the chain because neither has published agentic scores at that level, but both are in the eval and get promoted if they beat a chain member
+`EVAL_PROFILES_JSON` maps model IDs to generation overrides, such as `{"candidate":{"chat_template_kwargs":{"enable_thinking":true}}}`. Supported fields are `temperature`, `top_p`, `seed`, `max_tokens`, `max_completion_tokens`, `reasoning_effort`, `chat_template_kwargs` and `extra_body`. For direct NVIDIA calls, put native fields such as `chat_template_kwargs` at the top level. Record profiles alongside results and compare only settings that could actually be deployed. `EVAL_KEY_ROUTE` records a non-secret label for the key used. Repeat the run separately for each key
+
+Every completed request is saved atomically. An interrupted file has `complete: false`; keep it as partial evidence. The output contains trial numbers, finish reasons, returned model names, prompt/completion/reasoning token counts, latency and classified errors. HTTP response bodies are not logged. A truncated response cannot pass. Tool continuations preserve canonical `reasoning_content` and remove the legacy duplicate `reasoning` field
+
+`overall_success` divides passes by all evaluated tasks, including dependent continuations that could not run. `availability` measures completed, usable responses among attempted requests. `conditional_accuracy` measures grading accuracy among those usable responses. A wrong answer counts as an available response, while protocol failures, rejected completions and truncation do not. Separate error counts show timeouts, rate limits and dependency failures. Successful-response latency and all-attempt p90 latency are reported separately. Missing measurements are JSON `null`
+
+Default concurrency is three requests per model. Use one worker for initial quality comparisons, then separately test production concurrency and quota behavior. Three repeats of ten fixed tasks are a small screening sample. They do not measure repository-level implementation quality, establish independent quotas, or prove ordered proxy failover. The draft YAML is a proposal, not a tested deployment or promotion recommendation
+
+Run the local regression suite without API access
+
+```bash
+cd cookbook/nvidia_nim_fallback_eval
+python3 -m unittest -v test_eval_fallback_chain.py
+```

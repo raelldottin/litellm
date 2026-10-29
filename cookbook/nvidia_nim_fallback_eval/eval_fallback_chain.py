@@ -17,17 +17,23 @@ Env:
     EVAL_OUT        path for the raw JSON results, default fallback_eval_results.json
 """
 
+import http.client
 import json
+import math
 import os
 import re
 import statistics
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
+from collections import Counter
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Final
 
 DEFAULT_MODELS: Final = (
@@ -95,7 +101,7 @@ print(f([3, 4, 6, 7, 8, 9]))
 @dataclass(frozen=True, slots=True)
 class Task:
     name: str
-    messages: tuple[dict[str, str], ...]
+    messages: tuple[dict[str, object], ...]
     grade: Callable[[dict[str, object]], bool]
     tools: tuple[dict[str, object], ...] = ()
 
@@ -111,23 +117,25 @@ def content_of(message: dict[str, object]) -> str:
 
 def first_tool_call(message: dict[str, object]) -> tuple[str, dict[str, object]] | None:
     calls = message.get("tool_calls")
-    if not isinstance(calls, list) or not calls:
+    if not isinstance(calls, list) or len(calls) != 1 or not isinstance(calls[0], dict):
         return None
     fn = calls[0].get("function", {})
-    try:
-        args = json.loads(fn.get("arguments") or "{}")
-    except json.JSONDecodeError:
+    if not isinstance(fn, dict) or not isinstance(fn.get("name"), str) or not isinstance(fn.get("arguments"), str):
         return None
-    return fn.get("name", ""), args if isinstance(args, dict) else {}
+    args = parse_json_object(fn["arguments"])
+    return (fn["name"], args) if args is not None else None
+
+
+def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    if len({key for key, _ in pairs}) != len(pairs):
+        raise ValueError("Duplicate JSON object key")
+    return dict(pairs)
 
 
 def parse_json_object(text: str) -> dict[str, object] | None:
-    match = re.search(r"\{.*\}", text, flags=re.DOTALL)
-    if not match:
-        return None
     try:
-        parsed = json.loads(match.group(0))
-    except json.JSONDecodeError:
+        parsed = json.loads(text, object_pairs_hook=unique_object)
+    except (ValueError, TypeError):
         return None
     return parsed if isinstance(parsed, dict) else None
 
@@ -138,7 +146,9 @@ def user(text: str) -> tuple[dict[str, str], ...]:
 
 def grade_json(message: dict[str, object]) -> bool:
     obj = parse_json_object(content_of(message))
-    return obj is not None and obj == {"name": "Maria Lopez", "age": 34, "city": "Lisbon"}
+    return (
+        obj is not None and type(obj.get("age")) is int and obj == {"name": "Maria Lopez", "age": 34, "city": "Lisbon"}
+    )
 
 
 def grade_weather(message: dict[str, object]) -> bool:
@@ -146,7 +156,7 @@ def grade_weather(message: dict[str, object]) -> bool:
     return (
         call is not None
         and call[0] == "get_weather"
-        and "paris" in str(call[1].get("city", "")).lower()
+        and str(call[1].get("city", "")).strip().lower() in {"paris", "paris, france", "paris france"}
         and call[1].get("unit") == "celsius"
     )
 
@@ -200,7 +210,7 @@ TASKS: Final = (
     Task(
         "long_context",
         user(f"{HAYSTACK}\n\nWhat is the deployment passphrase mentioned in the logs above? Reply with it only."),
-        lambda m: NEEDLE in content_of(m),
+        lambda m: content_of(m) == NEEDLE,
     ),
     Task(
         "logic",
@@ -222,12 +232,38 @@ class Result:
     latency_s: float
     completion_tokens: int
     error: str
+    trial: int = 1
+    finish_reason: str = ""
+    returned_model: str = ""
+    prompt_tokens: int = 0
+    reasoning_tokens: int = 0
+    error_kind: str = ""
 
 
-def call(base_url: str, api_key: str, model: str, task: Task) -> Result:
-    body = {"model": model, "messages": list(task.messages), "temperature": 0, "max_tokens": 4096}
-    if task.tools:
-        body["tools"] = list(task.tools)
+def token_count(value: object) -> int:
+    return value if type(value) is int and value >= 0 else 0
+
+
+def request_task(
+    base_url: str,
+    api_key: str,
+    model: str,
+    task: Task,
+    *,
+    trial: int = 1,
+    timeout: float = 180,
+    max_tokens: int = 4096,
+    profile: dict[str, object] | None = None,
+    opener: Callable = urllib.request.urlopen,
+) -> tuple[Result, dict[str, object] | None]:
+    body = {
+        "temperature": 0,
+        "max_tokens": max_tokens,
+        **(profile or {}),
+        "model": model,
+        "messages": list(task.messages),
+        **({"tools": list(task.tools)} if task.tools else {}),
+    }
     request = urllib.request.Request(
         f"{base_url.rstrip('/')}/chat/completions",
         data=json.dumps(body).encode(),
@@ -235,38 +271,216 @@ def call(base_url: str, api_key: str, model: str, task: Task) -> Result:
     )
     start = time.monotonic()
     try:
-        with urllib.request.urlopen(request, timeout=180) as response:
+        with opener(request, timeout=timeout) as response:
             payload = json.load(response)
     except urllib.error.HTTPError as e:
-        return Result(model, task.name, False, e.code, time.monotonic() - start, 0, e.read().decode()[:300])
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as e:
-        return Result(model, task.name, False, 0, time.monotonic() - start, 0, str(e)[:300])
+        status = e.code
+        e.close()
+        kind = "rate_limit" if status == 429 else "http"
+        return Result(
+            model, task.name, False, status, time.monotonic() - start, 0, f"HTTP {status}", trial=trial, error_kind=kind
+        ), None
+    except (TimeoutError, urllib.error.URLError, OSError, http.client.HTTPException) as e:
+        kind = (
+            "timeout"
+            if isinstance(e, TimeoutError) or isinstance(getattr(e, "reason", None), TimeoutError)
+            else "transport"
+        )
+        return Result(model, task.name, False, 0, time.monotonic() - start, 0, kind, trial=trial, error_kind=kind), None
+    except (ValueError, UnicodeError):
+        return Result(
+            model,
+            task.name,
+            False,
+            200,
+            time.monotonic() - start,
+            0,
+            "Invalid JSON response",
+            trial=trial,
+            error_kind="protocol",
+        ), None
     elapsed = time.monotonic() - start
-    message = payload["choices"][0]["message"]
-    tokens = (payload.get("usage") or {}).get("completion_tokens") or 0
-    passed = task.grade(message)
+    if not isinstance(payload, dict):
+        return Result(
+            model, task.name, False, 200, elapsed, 0, "Invalid completion envelope", trial=trial, error_kind="protocol"
+        ), None
+    choices = payload.get("choices")
+    choice = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}
+    message = choice.get("message")
+    finish = choice.get("finish_reason")
+    if not isinstance(message, dict) or not isinstance(finish, str):
+        return Result(
+            model,
+            task.name,
+            False,
+            200,
+            elapsed,
+            0,
+            "Missing message or finish_reason",
+            trial=trial,
+            error_kind="protocol",
+        ), None
+    usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+    details = usage.get("completion_tokens_details") if isinstance(usage.get("completion_tokens_details"), dict) else {}
+    try:
+        passed = finish in {"stop", "tool_calls"} and bool(task.grade(message))
+    except (TypeError, ValueError, AttributeError, KeyError, IndexError):
+        return Result(
+            model,
+            task.name,
+            False,
+            200,
+            elapsed,
+            0,
+            "Malformed assistant message",
+            trial=trial,
+            finish_reason=finish,
+            error_kind="protocol",
+        ), None
+    kind = (
+        ""
+        if passed
+        else "truncated"
+        if finish == "length"
+        else "wrong_answer"
+        if finish in {"stop", "tool_calls"}
+        else "rejected"
+    )
     detail = "" if passed else json.dumps({"content": message.get("content"), "tool_calls": message.get("tool_calls")})
-    return Result(model, task.name, passed, 200, elapsed, tokens, detail[:300])
+    return Result(
+        model,
+        task.name,
+        passed,
+        200,
+        elapsed,
+        token_count(usage.get("completion_tokens")),
+        detail[:300],
+        trial=trial,
+        finish_reason=finish,
+        returned_model=payload.get("model") if isinstance(payload.get("model"), str) else "",
+        prompt_tokens=token_count(usage.get("prompt_tokens")),
+        reasoning_tokens=token_count(details.get("reasoning_tokens")),
+        error_kind=kind,
+    ), message
 
 
-def run_model(base_url: str, api_key: str, model: str, repeats: int, workers: int) -> tuple[Result, ...]:
-    jobs = tuple(task for task in TASKS for _ in range(repeats))
+def continuation_task(task: Task, message: dict[str, object] | None) -> Task | None:
+    if message is None or first_tool_call(message) is None:
+        return None
+    tool = message["tool_calls"][0]
+    if not isinstance(tool.get("id"), str) or not tool["id"]:
+        return None
+    assistant = {key: value for key, value in message.items() if key != "reasoning"}
+    if "reasoning_content" not in assistant and "reasoning" in message:
+        assistant = {**assistant, "reasoning_content": message["reasoning"]}
+    messages = (
+        *task.messages,
+        {**assistant, "role": "assistant"},
+        {"role": "tool", "tool_call_id": tool["id"], "content": '{"confirmation":"TOOL_RESULT_OK"}'},
+        {"role": "user", "content": "Reply with exactly the confirmation value supplied by the tool. No other text."},
+    )
+    return Task(
+        task.name + "_continuation",
+        messages,
+        lambda answer: content_of(answer) == "TOOL_RESULT_OK" and not answer.get("tool_calls"),
+        task.tools,
+    )
+
+
+def iter_model_results(
+    base_url: str,
+    api_key: str,
+    model: str,
+    repeats: int,
+    workers: int,
+    *,
+    timeout: float = 180,
+    max_tokens: int = 4096,
+    profile: dict[str, object] | None = None,
+):
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        return tuple(pool.map(lambda task: call(base_url, api_key, model, task), jobs))
+
+        def submit(task, trial):
+            return pool.submit(
+                request_task,
+                base_url,
+                api_key,
+                model,
+                task,
+                trial=trial,
+                timeout=timeout,
+                max_tokens=max_tokens,
+                profile=profile,
+            )
+
+        pending = {submit(task, trial): (task, trial) for task in TASKS for trial in range(1, repeats + 1)}
+        while pending:
+            done, _ = wait(pending, return_when=FIRST_COMPLETED)
+            for future in done:
+                task, trial = pending.pop(future)
+                result, message = future.result()
+                yield result
+                if not task.tools or task.name.endswith("_continuation"):
+                    continue
+                continuation = continuation_task(task, message) if result.passed else None
+                if continuation is None:
+                    yield Result(
+                        model,
+                        task.name + "_continuation",
+                        False,
+                        0,
+                        0,
+                        0,
+                        "Initial tool call did not qualify",
+                        trial=trial,
+                        error_kind="dependency",
+                    )
+                else:
+                    pending[submit(continuation, trial)] = (continuation, trial)
+
+
+def percentile90(values: list[float]) -> float | None:
+    return values[math.ceil(0.9 * len(values)) - 1] if values else None
 
 
 def summarize(model: str, results: tuple[Result, ...]) -> dict[str, object]:
-    ok = tuple(r for r in results if r.status == 200)
+    attempted = tuple(r for r in results if r.error_kind != "dependency")
+    ok = tuple(r for r in attempted if r.status == 200 and r.error_kind not in {"protocol", "truncated", "rejected"})
     latencies = sorted(r.latency_s for r in ok)
+    all_latencies = sorted(r.latency_s for r in attempted)
+    overall = sum(r.passed for r in results) / len(results) if results else 0
     return {
         "model": model,
-        "score": sum(r.passed for r in results) / len(results),
-        "availability": len(ok) / len(results),
-        "p50_s": statistics.median(latencies) if latencies else float("nan"),
-        "p90_s": latencies[int(0.9 * (len(latencies) - 1))] if latencies else float("nan"),
+        "score": overall,
+        "overall_success": overall,
+        "availability": len(ok) / len(attempted) if attempted else 0,
+        "conditional_accuracy": sum(r.passed for r in ok) / len(ok) if ok else None,
+        "p50_s": statistics.median(latencies) if latencies else None,
+        "p90_s": percentile90(latencies),
+        "all_attempt_p90_s": percentile90(all_latencies),
         "tok_per_s": sum(r.completion_tokens for r in ok) / max(sum(r.latency_s for r in ok), 1e-9),
         "failed_tasks": sorted({r.task for r in results if not r.passed}),
+        "error_counts": dict(Counter(r.error_kind for r in results if r.error_kind)),
+        "completed_results": len(results),
     }
+
+
+def save_checkpoint(path: Path, results: tuple[Result, ...], metadata: dict[str, object], *, complete: bool) -> None:
+    models = tuple(dict.fromkeys(result.model for result in results))
+    summaries = tuple(summarize(model, tuple(row for row in results if row.model == model)) for model in models)
+    payload = {
+        "schema": 2,
+        "complete": complete,
+        "metadata": metadata,
+        "summaries": summaries,
+        "results": tuple(asdict(result) for result in results),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, prefix=path.name + ".", delete=False) as output:
+        json.dump(payload, output, allow_nan=False, indent=2)
+        output.flush()
+        os.fsync(output.fileno())
+    os.replace(output.name, path)
 
 
 def main() -> None:
@@ -277,23 +491,70 @@ def main() -> None:
     models: Final = tuple(m.strip() for m in os.environ.get("EVAL_MODELS", ",".join(DEFAULT_MODELS)).split(","))
     repeats: Final = int(os.environ.get("EVAL_REPEATS", "3"))
     workers: Final = int(os.environ.get("EVAL_WORKERS", "3"))
-
-    per_model: Final = {m: run_model(base_url, api_key, m, repeats, workers) for m in models}
-    summaries: Final = sorted(
-        (summarize(m, rs) for m, rs in per_model.items()), key=lambda s: (-s["score"], s["p50_s"])
+    timeout: Final = float(os.environ.get("EVAL_TIMEOUT", "180"))
+    max_tokens: Final = int(os.environ.get("EVAL_MAX_TOKENS", "4096"))
+    profiles: Final = json.loads(os.environ.get("EVAL_PROFILES_JSON", "{}"))
+    allowed: Final = {
+        "temperature",
+        "top_p",
+        "seed",
+        "max_tokens",
+        "max_completion_tokens",
+        "reasoning_effort",
+        "chat_template_kwargs",
+        "extra_body",
+    }
+    if (
+        not models
+        or any(not model for model in models)
+        or min(repeats, workers, max_tokens) < 1
+        or not math.isfinite(timeout)
+        or timeout <= 0
+    ):
+        sys.exit("Models, repeats, workers, output budget and timeout must be nonempty and positive")
+    if not isinstance(profiles, dict) or any(
+        not isinstance(profile, dict) or set(profile) - allowed for profile in profiles.values()
+    ):
+        sys.exit("EVAL_PROFILES_JSON must map models to supported generation parameters")
+    output: Final = Path(os.environ.get("EVAL_OUT", "fallback_eval_results.json"))
+    metadata: Final = {
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "models": models,
+        "repeats": repeats,
+        "workers": workers,
+        "timeout": timeout,
+        "max_tokens": max_tokens,
+        "profiles": profiles,
+        "key_route": os.environ.get("EVAL_KEY_ROUTE", "unspecified"),
+        "expected_results_per_model": repeats * (len(TASKS) + sum(bool(task.tools) for task in TASKS)),
+    }
+    results = ()
+    save_checkpoint(output, results, metadata, complete=False)
+    for model in models:
+        for result in iter_model_results(
+            base_url,
+            api_key,
+            model,
+            repeats,
+            workers,
+            timeout=timeout,
+            max_tokens=max_tokens,
+            profile=profiles.get(model),
+        ):
+            results = (*results, result)
+            save_checkpoint(output, results, metadata, complete=False)
+            sys.stdout.write(
+                f"{result.model} trial={result.trial} {result.task} "
+                f"{'PASS' if result.passed else 'FAIL ' + result.error_kind} {result.latency_s:.1f}s\n"
+            )
+            sys.stdout.flush()
+    save_checkpoint(output, results, metadata, complete=True)
+    summaries = sorted(
+        (summarize(model, tuple(row for row in results if row.model == model)) for model in models),
+        key=lambda summary: (-summary["overall_success"], summary["p50_s"] or math.inf),
     )
-
-    print(f"{'model':40} {'score':>6} {'avail':>6} {'p50 s':>7} {'p90 s':>7} {'tok/s':>7}  failed tasks")
-    for s in summaries:
-        print(
-            f"{s['model']:40} {s['score']:6.0%} {s['availability']:6.0%} {s['p50_s']:7.1f} {s['p90_s']:7.1f} "
-            f"{s['tok_per_s']:7.0f}  {','.join(s['failed_tasks'])}"
-        )
-    for r in (r for rs in per_model.values() for r in rs if not r.passed):
-        print(f"FAIL {r.model} {r.task} status={r.status} {r.error}", file=sys.stderr)
-
-    with open(os.environ.get("EVAL_OUT", "fallback_eval_results.json"), "w") as f:
-        json.dump({"summaries": summaries, "results": [asdict(r) for rs in per_model.values() for r in rs]}, f)
+    sys.stdout.write(json.dumps(summaries, indent=2, allow_nan=False) + "\n")
+    sys.stdout.flush()
 
 
 if __name__ == "__main__":
