@@ -25,6 +25,7 @@ import re
 import statistics
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -244,6 +245,23 @@ def token_count(value: object) -> int:
     return value if type(value) is int and value >= 0 else 0
 
 
+class RequestPacer:
+    def __init__(self, interval: float, *, clock: Callable = time.monotonic, sleeper: Callable = time.sleep):
+        self.interval = interval
+        self.clock = clock
+        self.sleeper = sleeper
+        self.lock = threading.Lock()
+        self.last_started = None
+
+    def wait(self) -> None:
+        with self.lock:
+            if self.last_started is not None:
+                delay = self.interval - (self.clock() - self.last_started)
+                if delay > 0:
+                    self.sleeper(delay)
+            self.last_started = self.clock()
+
+
 def request_task(
     base_url: str,
     api_key: str,
@@ -255,6 +273,7 @@ def request_task(
     max_tokens: int = 4096,
     profile: dict[str, object] | None = None,
     opener: Callable = urllib.request.urlopen,
+    pacer: RequestPacer | None = None,
 ) -> tuple[Result, dict[str, object] | None]:
     body = {
         "temperature": 0,
@@ -269,6 +288,8 @@ def request_task(
         data=json.dumps(body).encode(),
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
     )
+    if pacer is not None:
+        pacer.wait()
     start = time.monotonic()
     try:
         with opener(request, timeout=timeout) as response:
@@ -397,6 +418,8 @@ def iter_model_results(
     timeout: float = 180,
     max_tokens: int = 4096,
     profile: dict[str, object] | None = None,
+    previous: tuple[Result, ...] = (),
+    pacer: RequestPacer | None = None,
 ):
     with ThreadPoolExecutor(max_workers=workers) as pool:
 
@@ -411,9 +434,15 @@ def iter_model_results(
                 timeout=timeout,
                 max_tokens=max_tokens,
                 profile=profile,
+                pacer=pacer,
             )
 
-        pending = {submit(task, trial): (task, trial) for task in TASKS for trial in range(1, repeats + 1)}
+        pending = {
+            submit(task, trial): (task, trial)
+            for task in TASKS
+            for trial in range(1, repeats + 1)
+            if needs_attempt(task, model, trial, previous)
+        }
         while pending:
             done, _ = wait(pending, return_when=FIRST_COMPLETED)
             for future in done:
@@ -465,7 +494,110 @@ def summarize(model: str, results: tuple[Result, ...]) -> dict[str, object]:
     }
 
 
-def save_checkpoint(path: Path, results: tuple[Result, ...], metadata: dict[str, object], *, complete: bool) -> None:
+def result_key(result: Result) -> tuple[str, str, int]:
+    return result.model, result.task, result.trial
+
+
+def needs_attempt(task: Task, model: str, trial: int, previous: tuple[Result, ...]) -> bool:
+    passed = {(row.model, row.task, row.trial) for row in previous if row.passed}
+    if (model, task.name, trial) not in passed:
+        return True
+    return bool(task.tools) and (model, task.name + "_continuation", trial) not in passed
+
+
+def merge_result(
+    results: tuple[Result, ...], history: tuple[Result, ...], result: Result
+) -> tuple[tuple[Result, ...], tuple[Result, ...]]:
+    old = next((row for row in results if result_key(row) == result_key(result)), None)
+    if old is None:
+        return (*results, result), history
+    if old.passed:
+        return results, (*history, result)
+    replacement = tuple(result if result_key(row) == result_key(result) else row for row in results)
+    return replacement, (*history, old)
+
+
+def validate_resume_record(row: object, metadata: dict[str, object]) -> Result:
+    if not isinstance(row, dict):
+        raise ValueError("Resume result must be an object")
+    try:
+        result = Result(**row)
+    except TypeError as error:
+        raise ValueError("Invalid resume result fields") from error
+    tasks = {task.name for task in TASKS} | {task.name + "_continuation" for task in TASKS if task.tools}
+    if not isinstance(result.model, str) or result.model not in metadata["models"]:
+        raise ValueError("Resume result model is outside the evaluation scope")
+    if not isinstance(result.task, str) or result.task not in tasks:
+        raise ValueError("Resume result task is outside the evaluation scope")
+    if type(result.trial) is not int or not 1 <= result.trial <= metadata["repeats"]:
+        raise ValueError("Resume result trial is outside the evaluation scope")
+    if type(result.passed) is not bool:
+        raise ValueError("Resume result passed must be a boolean")
+    counts = (result.status, result.completion_tokens, result.prompt_tokens, result.reasoning_tokens)
+    if any(type(value) is not int or value < 0 for value in counts):
+        raise ValueError("Resume result status and token counts must be nonnegative integers")
+    if type(result.latency_s) not in {int, float}:
+        raise ValueError("Resume result latency must be a finite nonnegative number")
+    try:
+        valid_latency = math.isfinite(result.latency_s) and result.latency_s >= 0
+    except OverflowError:
+        valid_latency = False
+    if not valid_latency:
+        raise ValueError("Resume result latency must be a finite nonnegative number")
+    if any(
+        not isinstance(value, str)
+        for value in (result.error, result.error_kind, result.finish_reason, result.returned_model)
+    ):
+        raise ValueError("Resume result text fields must be strings")
+    if result.error_kind not in {
+        "",
+        "rate_limit",
+        "http",
+        "timeout",
+        "transport",
+        "protocol",
+        "truncated",
+        "wrong_answer",
+        "rejected",
+        "dependency",
+    }:
+        raise ValueError("Unknown resume result error kind")
+    if result.passed and (
+        result.status != 200 or result.finish_reason not in {"stop", "tool_calls"} or result.error_kind or result.error
+    ):
+        raise ValueError("Successful resume result has inconsistent completion evidence")
+    return result
+
+
+def load_resume(path: Path, metadata: dict[str, object]) -> tuple[tuple[Result, ...], tuple[Result, ...]]:
+    payload = json.loads(path.read_text(), object_pairs_hook=unique_object)
+    if not isinstance(payload, dict) or type(payload.get("schema")) is not int or payload["schema"] != 2:
+        raise ValueError("Resume checkpoint must use schema 2")
+    if type(payload.get("complete")) is not bool or not isinstance(payload.get("metadata"), dict):
+        raise ValueError("Invalid resume checkpoint envelope")
+    if not isinstance(payload.get("results"), list) or not isinstance(payload.get("history", []), list):
+        raise ValueError("Resume results and history must be arrays")
+    old_metadata = payload["metadata"]
+    for field in ("models", "repeats", "profiles", "key_route", "max_tokens", "timeout"):
+        if json.dumps(old_metadata.get(field), sort_keys=True) != json.dumps(metadata.get(field), sort_keys=True):
+            raise ValueError("Resume configuration differs for " + field)
+    if "base_url" in old_metadata and old_metadata["base_url"] != metadata.get("base_url"):
+        raise ValueError("Resume configuration differs for base_url")
+    results = tuple(validate_resume_record(row, metadata) for row in payload["results"])
+    history = tuple(validate_resume_record(row, metadata) for row in payload.get("history", ()))
+    if len({result_key(row) for row in results}) != len(results):
+        raise ValueError("Resume checkpoint contains duplicate task/trial results")
+    return results, history
+
+
+def save_checkpoint(
+    path: Path,
+    results: tuple[Result, ...],
+    metadata: dict[str, object],
+    *,
+    complete: bool,
+    history: tuple[Result, ...] = (),
+) -> None:
     models = tuple(dict.fromkeys(result.model for result in results))
     summaries = tuple(summarize(model, tuple(row for row in results if row.model == model)) for model in models)
     payload = {
@@ -474,6 +606,8 @@ def save_checkpoint(path: Path, results: tuple[Result, ...], metadata: dict[str,
         "metadata": metadata,
         "summaries": summaries,
         "results": tuple(asdict(result) for result in results),
+        "history": tuple(asdict(result) for result in history),
+        "history_error_counts": dict(Counter(result.error_kind for result in history if result.error_kind)),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, prefix=path.name + ".", delete=False) as output:
@@ -493,6 +627,7 @@ def main() -> None:
     workers: Final = int(os.environ.get("EVAL_WORKERS", "3"))
     timeout: Final = float(os.environ.get("EVAL_TIMEOUT", "180"))
     max_tokens: Final = int(os.environ.get("EVAL_MAX_TOKENS", "4096"))
+    min_interval: Final = float(os.environ.get("EVAL_MIN_REQUEST_INTERVAL", "0"))
     profiles: Final = json.loads(os.environ.get("EVAL_PROFILES_JSON", "{}"))
     allowed: Final = {
         "temperature",
@@ -510,6 +645,8 @@ def main() -> None:
         or min(repeats, workers, max_tokens) < 1
         or not math.isfinite(timeout)
         or timeout <= 0
+        or not math.isfinite(min_interval)
+        or min_interval < 0
     ):
         sys.exit("Models, repeats, workers, output budget and timeout must be nonempty and positive")
     if not isinstance(profiles, dict) or any(
@@ -522,14 +659,39 @@ def main() -> None:
         "models": models,
         "repeats": repeats,
         "workers": workers,
+        "base_url": base_url,
+        "min_request_interval": min_interval,
         "timeout": timeout,
         "max_tokens": max_tokens,
         "profiles": profiles,
         "key_route": os.environ.get("EVAL_KEY_ROUTE", "unspecified"),
         "expected_results_per_model": repeats * (len(TASKS) + sum(bool(task.tools) for task in TASKS)),
     }
-    results = ()
-    save_checkpoint(output, results, metadata, complete=False)
+    if os.environ.get("EVAL_RESUME", "0") == "1":
+        try:
+            results, history = load_resume(output, metadata)
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            sys.exit("Cannot resume checkpoint: " + str(error))
+        previous_metadata = json.loads(output.read_text())["metadata"]
+        run_metadata = {
+            **metadata,
+            "started_at": previous_metadata.get("started_at", metadata["started_at"]),
+            "resume_history": (
+                *previous_metadata.get("resume_history", ()),
+                {
+                    "resumed_at": metadata["started_at"],
+                    "previous_workers": previous_metadata.get("workers"),
+                    "previous_interval": previous_metadata.get("min_request_interval", 0),
+                    "workers": workers,
+                    "min_request_interval": min_interval,
+                },
+            ),
+        }
+    else:
+        results, history = (), ()
+        run_metadata = metadata
+    pacer = RequestPacer(min_interval)
+    save_checkpoint(output, results, run_metadata, complete=False, history=history)
     for model in models:
         for result in iter_model_results(
             base_url,
@@ -540,15 +702,17 @@ def main() -> None:
             timeout=timeout,
             max_tokens=max_tokens,
             profile=profiles.get(model),
+            previous=results,
+            pacer=pacer,
         ):
-            results = (*results, result)
-            save_checkpoint(output, results, metadata, complete=False)
+            results, history = merge_result(results, history, result)
+            save_checkpoint(output, results, run_metadata, complete=False, history=history)
             sys.stdout.write(
                 f"{result.model} trial={result.trial} {result.task} "
                 f"{'PASS' if result.passed else 'FAIL ' + result.error_kind} {result.latency_s:.1f}s\n"
             )
             sys.stdout.flush()
-    save_checkpoint(output, results, metadata, complete=True)
+    save_checkpoint(output, results, run_metadata, complete=True, history=history)
     summaries = sorted(
         (summarize(model, tuple(row for row in results if row.model == model)) for model in models),
         key=lambda summary: (-summary["overall_success"], summary["p50_s"] or math.inf),

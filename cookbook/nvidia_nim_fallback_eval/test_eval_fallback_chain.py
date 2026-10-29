@@ -38,6 +38,115 @@ class FakeResponse(io.BytesIO):
 
 
 class EvaluatorTests(unittest.TestCase):
+    def test_resume_only_schedules_missing_failed_and_incomplete_tool_pairs(self):
+        good = evaluator.Result("m", "instruction", True, 200, 1, 1, "")
+        failed = evaluator.Result("m", "logic", False, 429, 1, 0, "limited", error_kind="rate_limit")
+        tool = evaluator.Result("m", "tool_select", True, 200, 1, 1, "")
+        rows = (good, failed, tool)
+        by_name = {task.name: task for task in evaluator.TASKS}
+        self.assertFalse(evaluator.needs_attempt(by_name["instruction"], "m", 1, rows))
+        self.assertTrue(evaluator.needs_attempt(by_name["logic"], "m", 1, rows))
+        self.assertTrue(evaluator.needs_attempt(by_name["json_extract"], "m", 1, rows))
+        self.assertTrue(evaluator.needs_attempt(by_name["tool_select"], "m", 1, rows))
+        continued = evaluator.Result("m", "tool_select_continuation", True, 200, 1, 1, "")
+        self.assertFalse(evaluator.needs_attempt(by_name["tool_select"], "m", 1, (*rows, continued)))
+        replacement = evaluator.Result("m", "logic", True, 200, 2, 1, "")
+        merged, history = evaluator.merge_result(rows, (), replacement)
+        self.assertEqual(len(merged), 3)
+        self.assertIn(failed, history)
+        self.assertIn(replacement, merged)
+        refreshed_failure = evaluator.Result("m", "tool_select", False, 429, 1, 0, "limited", error_kind="rate_limit")
+        retained, history = evaluator.merge_result(merged, history, refreshed_failure)
+        self.assertIn(tool, retained)
+        self.assertIn(refreshed_failure, history)
+
+    def test_resume_validates_profile_and_preserves_failed_attempt_history(self):
+        metadata = {
+            "models": ["m"],
+            "repeats": 1,
+            "profiles": {"m": {"temperature": 0}},
+            "key_route": "one",
+            "max_tokens": 42,
+            "timeout": 12,
+            "workers": 3,
+        }
+        failed = evaluator.Result("m", "logic", False, 429, 1, 0, "limited", error_kind="rate_limit")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "resume.json"
+            evaluator.save_checkpoint(path, (failed,), metadata, complete=False, history=(failed,))
+            rows, history = evaluator.load_resume(path, {**metadata, "workers": 1})
+            self.assertEqual(rows, (failed,))
+            self.assertEqual(history, (failed,))
+            with self.assertRaises(ValueError):
+                evaluator.load_resume(path, {**metadata, "key_route": "two"})
+            with self.assertRaises(ValueError):
+                evaluator.load_resume(path, {**metadata, "profiles": {"m": {"temperature": 1}}})
+
+    def test_request_pacer_spaces_starts_using_shared_clock(self):
+        now = [0.0]
+        sleeps = []
+
+        def sleep(delay):
+            sleeps.append(delay)
+            now[0] += delay
+
+        pacer = evaluator.RequestPacer(0.25, clock=lambda: now[0], sleeper=sleep)
+        pacer.wait()
+        pacer.wait()
+        pacer.wait()
+        self.assertEqual(sleeps, [0.25, 0.25])
+        self.assertEqual(now[0], 0.5)
+
+    def test_resume_rejects_corrupted_result_and_history_records(self):
+        metadata = {"models": ["m"], "repeats": 1, "profiles": {}, "key_route": "one", "max_tokens": 42, "timeout": 12}
+        valid = evaluator.asdict(evaluator.Result("m", "instruction", True, 200, 1.5, 3, "", finish_reason="stop"))
+        changes = (
+            {"model": "unknown_model"},
+            {"task": "unknown_task"},
+            {"trial": 999},
+            {"trial": True},
+            {"passed": "false"},
+            {"status": True},
+            {"status": -1},
+            {"completion_tokens": -1},
+            {"prompt_tokens": "10"},
+            {"reasoning_tokens": 1.2},
+            {"latency_s": float("nan")},
+            {"latency_s": float("inf")},
+            {"latency_s": -1},
+            {"latency_s": True},
+            {"status": 429},
+            {"finish_reason": "length"},
+            {"error_kind": "wrong_answer"},
+            {"error": "Failed"},
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "resume.json"
+            for collection in ("results", "history"):
+                for change in changes:
+                    with self.subTest(collection=collection, change=change):
+                        payload = {
+                            "schema": 2,
+                            "complete": False,
+                            "metadata": metadata,
+                            "results": [valid],
+                            "history": [],
+                        }
+                        payload[collection] = [{**valid, **change}]
+                        path.write_text(json.dumps(payload))
+                        with self.assertRaises(ValueError):
+                            evaluator.load_resume(path, metadata)
+            for schema in (1, "2", True, None):
+                path.write_text(
+                    json.dumps({"schema": schema, "complete": False, "metadata": metadata, "results": [valid]})
+                )
+                with self.subTest(schema=schema), self.assertRaises(ValueError):
+                    evaluator.load_resume(path, metadata)
+            path.write_text(json.dumps({"schema": 2, "complete": False, "metadata": metadata, "results": [valid]}))
+            rows, history = evaluator.load_resume(path, metadata)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(history, ())
+
     def test_json_requires_only_object_integer_and_unique_keys(self):
         valid = '{"name":"Maria Lopez","age":34,"city":"Lisbon"}'
         self.assertTrue(evaluator.grade_json({"content": valid}))
@@ -152,9 +261,11 @@ class EvaluatorTests(unittest.TestCase):
         self.assertTrue(continued.passed)
 
     def test_cli_checkpoints_survive_endpoint_failures(self):
+        requests = []
+
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self):
-                self.rfile.read(int(self.headers["Content-Length"]))
+                requests.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
                 self.send_response(429)
                 self.end_headers()
                 self.wfile.write(b'{"error":"limited"}')
@@ -186,6 +297,27 @@ class EvaluatorTests(unittest.TestCase):
                 self.assertEqual(len(saved["results"]), 10)
                 self.assertEqual(saved["summaries"][0]["error_counts"], {"rate_limit": 8, "dependency": 2})
                 self.assertIsNone(saved["summaries"][0]["conditional_accuracy"])
+                previous = tuple(evaluator.Result(**row) for row in saved["results"])
+                passing = evaluator.Result("unavailable", "instruction", True, 200, 1, 1, "", finish_reason="stop")
+                rows, history = evaluator.merge_result(previous, (), passing)
+                evaluator.save_checkpoint(path, rows, saved["metadata"], complete=False, history=history)
+                resumed = subprocess.run(
+                    [sys.executable, evaluator.__file__],
+                    env={**environment, "EVAL_RESUME": "1", "EVAL_WORKERS": "1"},
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                self.assertEqual(resumed.returncode, 0, resumed.stderr)
+                self.assertEqual(len(requests), 15)
+                self.assertEqual(sum("ACKNOWLEDGED" in request["messages"][0]["content"] for request in requests), 1)
+                resumed_output = json.loads(path.read_text())
+                self.assertEqual(len(resumed_output["results"]), 10)
+                self.assertEqual(len(resumed_output["history"]), 10)
+                self.assertEqual(resumed_output["history_error_counts"]["rate_limit"], 8)
+                self.assertTrue(
+                    next(row for row in resumed_output["results"] if row["task"] == "instruction")["passed"]
+                )
         finally:
             server.shutdown()
             server.server_close()
