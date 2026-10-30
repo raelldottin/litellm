@@ -15,6 +15,12 @@ Env:
     EVAL_REPEATS    runs per task, default 3
     EVAL_WORKERS    parallel requests per model, default 3
     EVAL_OUT        path for the raw JSON results, default fallback_eval_results.json
+    EVAL_TIMEOUT    request inactivity timeout in seconds, default 180
+    EVAL_MAX_TOKENS  output budget, default 4096
+    EVAL_PROFILES_JSON  per-model native generation settings as JSON
+    EVAL_KEY_ROUTE   non-secret label identifying this credential trial
+    EVAL_MIN_REQUEST_INTERVAL  seconds between request starts, default 0
+    EVAL_RESUME      set to 1 to resume an existing matching checkpoint
 """
 
 import http.client
@@ -41,10 +47,11 @@ DEFAULT_MODELS: Final = (
     "z-ai/glm-5.3-flash",
     "deepseek-ai/deepseek-v4.1-flash",
     "minimaxai/minimax-m3.1-flash",
+    "meta/muse-glimmer-30b",
     "moonshotai/kimi-k2.6",
     "stepfun-ai/step-5-preview",
     "nvidia/nemotron-3-ultra-550b-a55b",
-    "nvidia/nemotron-3-super-120b-a12b",
+    "nvidia/nemotron-3.5-super-vl-120b-a12b",
     "nvidia/nemotron-3.5-lightning-30b-a3b",
     "google/gemma-4-31b-it",
     "poolside/laguna-xs-2.1",
