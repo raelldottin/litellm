@@ -287,6 +287,7 @@ class EvaluatorTests(unittest.TestCase):
                     "EVAL_WORKERS": "2",
                     "EVAL_OUT": str(path),
                     "EVAL_BASE_URL": f"http://127.0.0.1:{server.server_port}/v1",
+                    "EVAL_PROFILES_JSON": json.dumps({"unavailable": {"reasoning_budget": 4096}}),
                 }
                 process = subprocess.run(
                     [sys.executable, evaluator.__file__], env=environment, capture_output=True, text=True, timeout=10
@@ -297,6 +298,8 @@ class EvaluatorTests(unittest.TestCase):
                 self.assertEqual(len(saved["results"]), 10)
                 self.assertEqual(saved["summaries"][0]["error_counts"], {"rate_limit": 8, "dependency": 2})
                 self.assertIsNone(saved["summaries"][0]["conditional_accuracy"])
+                self.assertEqual(saved["metadata"]["profiles"], {"unavailable": {"reasoning_budget": 4096}})
+                self.assertTrue(all(request["reasoning_budget"] == 4096 for request in requests))
                 previous = tuple(evaluator.Result(**row) for row in saved["results"])
                 passing = evaluator.Result("unavailable", "instruction", True, 200, 1, 1, "", finish_reason="stop")
                 rows, history = evaluator.merge_result(previous, (), passing)
@@ -322,6 +325,28 @@ class EvaluatorTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=2)
+
+    def test_cli_rejects_unknown_profile_fields_before_requesting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "results.json"
+            process = subprocess.run(
+                [sys.executable, evaluator.__file__],
+                check=False,
+                env={
+                    **os.environ,
+                    "EVAL_API_KEY": "test",
+                    "EVAL_MODELS": "candidate",
+                    "EVAL_OUT": str(path),
+                    "EVAL_BASE_URL": "http://example.invalid/v1",
+                    "EVAL_PROFILES_JSON": json.dumps({"candidate": {"unsupported_control": 1}}),
+                },
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            self.assertNotEqual(process.returncode, 0)
+            self.assertIn("supported generation parameters", process.stderr)
+            self.assertFalse(path.exists())
 
     def test_checkpoint_and_metrics_distinguish_failure_types(self):
         good = evaluator.Result("m", "instruction", True, 200, 1, 4, "")

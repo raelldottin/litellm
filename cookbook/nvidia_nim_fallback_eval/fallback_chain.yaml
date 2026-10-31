@@ -1,18 +1,19 @@
+---
 model_list:
 - model_name: Hermes Kanban
   litellm_params:
     model: auto_router/complexity_router
+    complexity_router_default_model: Hermes ten fallback ultra key1
     complexity_router_config:
       tiers:
-        SIMPLE: Hermes fallback ultra key1
-        MEDIUM: Hermes fallback ultra key1
-        COMPLEX: Hermes fallback ultra key1
-        REASONING: Hermes fallback ultra key1
-      default_model: Hermes fallback ultra key1
+        SIMPLE: Hermes ten fallback ultra key1
+        MEDIUM: Hermes ten fallback ultra key1
+        COMPLEX: Hermes ten fallback ultra key1
+        REASONING: Hermes ten fallback ultra key1
+      default_model: Hermes ten fallback ultra key1
       classifier_type: heuristic
       enable_non_reasoning_tier: false
-    complexity_router_default_model: Hermes fallback ultra key1
-- model_name: Hermes fallback ultra key1
+- model_name: Hermes ten fallback ultra key1
   litellm_params:
     model: nvidia_nim/nvidia/nemotron-3-ultra-550b-a55b
     api_base: https://integrate.api.nvidia.com/v1
@@ -35,7 +36,7 @@ model_list:
     context_window: 256000
     max_input_tokens: 239616
     max_output_tokens: 16384
-- model_name: Hermes fallback ultra key2
+- model_name: Hermes ten fallback ultra key2
   litellm_params:
     model: nvidia_nim/nvidia/nemotron-3-ultra-550b-a55b
     api_base: https://integrate.api.nvidia.com/v1
@@ -58,7 +59,7 @@ model_list:
     context_window: 256000
     max_input_tokens: 239616
     max_output_tokens: 16384
-- model_name: Hermes fallback super-vl key1
+- model_name: Hermes ten fallback super-vl key1
   litellm_params:
     model: nvidia_nim/nvidia/nemotron-3.5-super-vl-120b-a12b
     api_base: https://integrate.api.nvidia.com/v1
@@ -80,7 +81,7 @@ model_list:
     context_window: 256000
     max_input_tokens: 239616
     max_output_tokens: 16384
-- model_name: Hermes fallback super-vl key2
+- model_name: Hermes ten fallback super-vl key2
   litellm_params:
     model: nvidia_nim/nvidia/nemotron-3.5-super-vl-120b-a12b
     api_base: https://integrate.api.nvidia.com/v1
@@ -102,7 +103,7 @@ model_list:
     context_window: 256000
     max_input_tokens: 239616
     max_output_tokens: 16384
-- model_name: Hermes fallback minimax key1
+- model_name: Hermes ten fallback minimax key1
   litellm_params:
     model: nvidia_nim/minimaxai/minimax-m3.1-flash
     api_base: https://integrate.api.nvidia.com/v1
@@ -124,7 +125,7 @@ model_list:
     context_window: 256000
     max_input_tokens: 239616
     max_output_tokens: 16384
-- model_name: Hermes fallback minimax key2
+- model_name: Hermes ten fallback minimax key2
   litellm_params:
     model: nvidia_nim/minimaxai/minimax-m3.1-flash
     api_base: https://integrate.api.nvidia.com/v1
@@ -146,7 +147,7 @@ model_list:
     context_window: 256000
     max_input_tokens: 239616
     max_output_tokens: 16384
-- model_name: Hermes fallback muse key1
+- model_name: Hermes ten fallback muse key1
   litellm_params:
     model: nvidia_nim/meta/muse-glimmer-30b
     api_base: https://integrate.api.nvidia.com/v1
@@ -168,7 +169,7 @@ model_list:
     context_window: 131072
     max_input_tokens: 114688
     max_output_tokens: 16384
-- model_name: Hermes fallback muse key2
+- model_name: Hermes ten fallback muse key2
   litellm_params:
     model: nvidia_nim/meta/muse-glimmer-30b
     api_base: https://integrate.api.nvidia.com/v1
@@ -190,7 +191,240 @@ model_list:
     context_window: 131072
     max_input_tokens: 114688
     max_output_tokens: 16384
-- model_name: Hermes fallback beam
+- model_name: Hermes ten fallback gpt-oss-20b key1
+  litellm_params:
+    model: nvidia_nim/openai/gpt-oss-20b
+    api_base: https://integrate.api.nvidia.com/v1
+    api_key: os.environ/NVIDIA_NIM_API_KEY
+    timeout: 300
+    max_retries: 0
+    additional_drop_params:
+    - max_completion_tokens
+    allowed_openai_params:
+    - max_retries
+    - reasoning_effort
+    extra_body:
+      max_tokens: 16384
+      reasoning_effort: low
+      temperature: 0
+  model_info:
+    mode: chat
+    base_model: openai/gpt-oss-20b
+    context_window: 128000
+    max_input_tokens: 111616
+    max_output_tokens: 16384
+- model_name: Hermes ten fallback gpt-oss-20b key2
+  litellm_params:
+    model: nvidia_nim/openai/gpt-oss-20b
+    api_base: https://integrate.api.nvidia.com/v1
+    api_key: os.environ/NVIDIA_NIM_API_KEY_SECONDARY
+    timeout: 300
+    max_retries: 0
+    additional_drop_params:
+    - max_completion_tokens
+    allowed_openai_params:
+    - max_retries
+    - reasoning_effort
+    extra_body:
+      max_tokens: 16384
+      reasoning_effort: low
+      temperature: 0
+  model_info:
+    mode: chat
+    base_model: openai/gpt-oss-20b
+    context_window: 128000
+    max_input_tokens: 111616
+    max_output_tokens: 16384
+- model_name: Hermes ten fallback diffusion-gemma key1
+  litellm_params:
+    model: nvidia_nim/google/diffusiongemma-26b-a4b-it
+    api_base: https://integrate.api.nvidia.com/v1
+    api_key: os.environ/NVIDIA_NIM_API_KEY
+    timeout: 300
+    max_retries: 0
+    additional_drop_params:
+    - reasoning_effort
+    - max_completion_tokens
+    allowed_openai_params:
+    - max_retries
+    extra_body:
+      max_tokens: 16384
+      temperature: 1.0
+      top_p: 0.95
+      chat_template_kwargs:
+        enable_thinking: true
+  model_info:
+    mode: chat
+    base_model: google/diffusiongemma-26b-a4b-it
+    context_window: 256000
+    max_input_tokens: 239616
+    max_output_tokens: 16384
+- model_name: Hermes ten fallback diffusion-gemma key2
+  litellm_params:
+    model: nvidia_nim/google/diffusiongemma-26b-a4b-it
+    api_base: https://integrate.api.nvidia.com/v1
+    api_key: os.environ/NVIDIA_NIM_API_KEY_SECONDARY
+    timeout: 300
+    max_retries: 0
+    additional_drop_params:
+    - reasoning_effort
+    - max_completion_tokens
+    allowed_openai_params:
+    - max_retries
+    extra_body:
+      max_tokens: 16384
+      temperature: 1.0
+      top_p: 0.95
+      chat_template_kwargs:
+        enable_thinking: true
+  model_info:
+    mode: chat
+    base_model: google/diffusiongemma-26b-a4b-it
+    context_window: 256000
+    max_input_tokens: 239616
+    max_output_tokens: 16384
+- model_name: Hermes ten fallback nano-omni key1
+  litellm_params:
+    model: nvidia_nim/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning
+    api_base: https://integrate.api.nvidia.com/v1
+    api_key: os.environ/NVIDIA_NIM_API_KEY
+    timeout: 300
+    max_retries: 0
+    additional_drop_params:
+    - reasoning_effort
+    - max_completion_tokens
+    allowed_openai_params:
+    - max_retries
+    extra_body:
+      max_tokens: 16384
+      temperature: 0.6
+      top_p: 0.95
+      reasoning_budget: 4096
+  model_info:
+    mode: chat
+    base_model: nvidia/nemotron-3-nano-omni-30b-a3b-reasoning
+    context_window: 256000
+    max_input_tokens: 239616
+    max_output_tokens: 16384
+- model_name: Hermes ten fallback nano-omni key2
+  litellm_params:
+    model: nvidia_nim/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning
+    api_base: https://integrate.api.nvidia.com/v1
+    api_key: os.environ/NVIDIA_NIM_API_KEY_SECONDARY
+    timeout: 300
+    max_retries: 0
+    additional_drop_params:
+    - reasoning_effort
+    - max_completion_tokens
+    allowed_openai_params:
+    - max_retries
+    extra_body:
+      max_tokens: 16384
+      temperature: 0.6
+      top_p: 0.95
+      reasoning_budget: 4096
+  model_info:
+    mode: chat
+    base_model: nvidia/nemotron-3-nano-omni-30b-a3b-reasoning
+    context_window: 256000
+    max_input_tokens: 239616
+    max_output_tokens: 16384
+- model_name: Hermes ten fallback mistral-large-4 key1
+  litellm_params:
+    model: nvidia_nim/mistralai/mistral-large-4-1t-a52b
+    api_base: https://integrate.api.nvidia.com/v1
+    api_key: os.environ/NVIDIA_NIM_API_KEY
+    timeout: 60
+    max_retries: 0
+    additional_drop_params:
+    - max_completion_tokens
+    allowed_openai_params:
+    - max_retries
+    - reasoning_effort
+    extra_body:
+      max_tokens: 16384
+      temperature: 1.0
+      top_p: 0.95
+      reasoning_effort: low
+  model_info:
+    mode: chat
+    base_model: mistralai/mistral-large-4-1t-a52b
+    context_window: 256000
+    max_input_tokens: 239616
+    max_output_tokens: 16384
+- model_name: Hermes ten fallback mistral-large-4 key2
+  litellm_params:
+    model: nvidia_nim/mistralai/mistral-large-4-1t-a52b
+    api_base: https://integrate.api.nvidia.com/v1
+    api_key: os.environ/NVIDIA_NIM_API_KEY_SECONDARY
+    timeout: 60
+    max_retries: 0
+    additional_drop_params:
+    - max_completion_tokens
+    allowed_openai_params:
+    - max_retries
+    - reasoning_effort
+    extra_body:
+      max_tokens: 16384
+      temperature: 1.0
+      top_p: 0.95
+      reasoning_effort: low
+  model_info:
+    mode: chat
+    base_model: mistralai/mistral-large-4-1t-a52b
+    context_window: 256000
+    max_input_tokens: 239616
+    max_output_tokens: 16384
+- model_name: Hermes ten fallback lightning key1
+  litellm_params:
+    model: nvidia_nim/nvidia/nemotron-3.5-lightning-30b-a3b
+    api_base: https://integrate.api.nvidia.com/v1
+    api_key: os.environ/NVIDIA_NIM_API_KEY
+    timeout: 300
+    max_retries: 0
+    additional_drop_params:
+    - reasoning_effort
+    - max_completion_tokens
+    allowed_openai_params:
+    - max_retries
+    extra_body:
+      max_tokens: 16384
+      temperature: 0.6
+      top_p: 0.95
+      reasoning_budget: 4096
+      chat_template_kwargs: &id001
+        enable_thinking: true
+  model_info:
+    mode: chat
+    base_model: nvidia/nemotron-3.5-lightning-30b-a3b
+    context_window: 256000
+    max_input_tokens: 239616
+    max_output_tokens: 16384
+- model_name: Hermes ten fallback lightning key2
+  litellm_params:
+    model: nvidia_nim/nvidia/nemotron-3.5-lightning-30b-a3b
+    api_base: https://integrate.api.nvidia.com/v1
+    api_key: os.environ/NVIDIA_NIM_API_KEY_SECONDARY
+    timeout: 300
+    max_retries: 0
+    additional_drop_params:
+    - reasoning_effort
+    - max_completion_tokens
+    allowed_openai_params:
+    - max_retries
+    extra_body:
+      max_tokens: 16384
+      temperature: 0.6
+      top_p: 0.95
+      reasoning_budget: 4096
+      chat_template_kwargs: *id001
+  model_info:
+    mode: chat
+    base_model: nvidia/nemotron-3.5-lightning-30b-a3b
+    context_window: 256000
+    max_input_tokens: 239616
+    max_output_tokens: 16384
+- model_name: Hermes ten fallback beam
   litellm_params:
     model: custom_openai/Beam-1.0-501B-A23B
     api_base: https://api.reflection.ai/openai/v1
@@ -198,10 +432,10 @@ model_list:
     timeout: 300
     max_retries: 0
     additional_drop_params:
-    - reasoning_effort
     - max_completion_tokens
     allowed_openai_params:
     - max_retries
+    - reasoning_effort
     extra_body:
       max_tokens: 16384
       reasoning_effort: medium
@@ -211,32 +445,277 @@ model_list:
     context_window: 256000
     max_input_tokens: 239616
     max_output_tokens: 16384
+- model_name: Hermes ten fallback gpt-oss-20b key1
+  model_info:
+    mode: chat
+  litellm_params:
+    model: auto_router/complexity_router
+    complexity_router_default_model: Hermes ten fallback gpt-oss-20b key1
+    complexity_router_config:
+      classifier_type: heuristic
+      default_model: Hermes ten fallback gpt-oss-20b key1
+      enable_non_reasoning_tier: false
+      tiers:
+        SIMPLE: Hermes ten fallback gpt-oss-20b key1
+        MEDIUM: Hermes ten fallback gpt-oss-20b key1
+        COMPLEX: Hermes ten fallback gpt-oss-20b key1
+        REASONING: Hermes ten fallback gpt-oss-20b key1
+      tier_model_configs:
+        SIMPLE:
+        - model_name: Hermes ten fallback gpt-oss-20b key1
+          litellm_params:
+            reasoning_effort: low
+            allowed_openai_params:
+            - max_retries
+            - reasoning_effort
+        MEDIUM:
+        - model_name: Hermes ten fallback gpt-oss-20b key1
+          litellm_params:
+            reasoning_effort: low
+            allowed_openai_params:
+            - max_retries
+            - reasoning_effort
+        COMPLEX:
+        - model_name: Hermes ten fallback gpt-oss-20b key1
+          litellm_params:
+            reasoning_effort: low
+            allowed_openai_params:
+            - max_retries
+            - reasoning_effort
+        REASONING:
+        - model_name: Hermes ten fallback gpt-oss-20b key1
+          litellm_params:
+            reasoning_effort: low
+            allowed_openai_params:
+            - max_retries
+            - reasoning_effort
+- model_name: Hermes ten fallback gpt-oss-20b key2
+  model_info:
+    mode: chat
+  litellm_params:
+    model: auto_router/complexity_router
+    complexity_router_default_model: Hermes ten fallback gpt-oss-20b key2
+    complexity_router_config:
+      classifier_type: heuristic
+      default_model: Hermes ten fallback gpt-oss-20b key2
+      enable_non_reasoning_tier: false
+      tiers:
+        SIMPLE: Hermes ten fallback gpt-oss-20b key2
+        MEDIUM: Hermes ten fallback gpt-oss-20b key2
+        COMPLEX: Hermes ten fallback gpt-oss-20b key2
+        REASONING: Hermes ten fallback gpt-oss-20b key2
+      tier_model_configs:
+        SIMPLE:
+        - model_name: Hermes ten fallback gpt-oss-20b key2
+          litellm_params:
+            reasoning_effort: low
+            allowed_openai_params:
+            - max_retries
+            - reasoning_effort
+        MEDIUM:
+        - model_name: Hermes ten fallback gpt-oss-20b key2
+          litellm_params:
+            reasoning_effort: low
+            allowed_openai_params:
+            - max_retries
+            - reasoning_effort
+        COMPLEX:
+        - model_name: Hermes ten fallback gpt-oss-20b key2
+          litellm_params:
+            reasoning_effort: low
+            allowed_openai_params:
+            - max_retries
+            - reasoning_effort
+        REASONING:
+        - model_name: Hermes ten fallback gpt-oss-20b key2
+          litellm_params:
+            reasoning_effort: low
+            allowed_openai_params:
+            - max_retries
+            - reasoning_effort
+- model_name: Hermes ten fallback mistral-large-4 key1
+  model_info:
+    mode: chat
+  litellm_params:
+    model: auto_router/complexity_router
+    complexity_router_default_model: Hermes ten fallback mistral-large-4 key1
+    complexity_router_config:
+      classifier_type: heuristic
+      default_model: Hermes ten fallback mistral-large-4 key1
+      enable_non_reasoning_tier: false
+      tiers:
+        SIMPLE: Hermes ten fallback mistral-large-4 key1
+        MEDIUM: Hermes ten fallback mistral-large-4 key1
+        COMPLEX: Hermes ten fallback mistral-large-4 key1
+        REASONING: Hermes ten fallback mistral-large-4 key1
+      tier_model_configs:
+        SIMPLE:
+        - model_name: Hermes ten fallback mistral-large-4 key1
+          litellm_params:
+            reasoning_effort: low
+            allowed_openai_params:
+            - max_retries
+            - reasoning_effort
+        MEDIUM:
+        - model_name: Hermes ten fallback mistral-large-4 key1
+          litellm_params:
+            reasoning_effort: low
+            allowed_openai_params:
+            - max_retries
+            - reasoning_effort
+        COMPLEX:
+        - model_name: Hermes ten fallback mistral-large-4 key1
+          litellm_params:
+            reasoning_effort: low
+            allowed_openai_params:
+            - max_retries
+            - reasoning_effort
+        REASONING:
+        - model_name: Hermes ten fallback mistral-large-4 key1
+          litellm_params:
+            reasoning_effort: low
+            allowed_openai_params:
+            - max_retries
+            - reasoning_effort
+- model_name: Hermes ten fallback mistral-large-4 key2
+  model_info:
+    mode: chat
+  litellm_params:
+    model: auto_router/complexity_router
+    complexity_router_default_model: Hermes ten fallback mistral-large-4 key2
+    complexity_router_config:
+      classifier_type: heuristic
+      default_model: Hermes ten fallback mistral-large-4 key2
+      enable_non_reasoning_tier: false
+      tiers:
+        SIMPLE: Hermes ten fallback mistral-large-4 key2
+        MEDIUM: Hermes ten fallback mistral-large-4 key2
+        COMPLEX: Hermes ten fallback mistral-large-4 key2
+        REASONING: Hermes ten fallback mistral-large-4 key2
+      tier_model_configs:
+        SIMPLE:
+        - model_name: Hermes ten fallback mistral-large-4 key2
+          litellm_params:
+            reasoning_effort: low
+            allowed_openai_params:
+            - max_retries
+            - reasoning_effort
+        MEDIUM:
+        - model_name: Hermes ten fallback mistral-large-4 key2
+          litellm_params:
+            reasoning_effort: low
+            allowed_openai_params:
+            - max_retries
+            - reasoning_effort
+        COMPLEX:
+        - model_name: Hermes ten fallback mistral-large-4 key2
+          litellm_params:
+            reasoning_effort: low
+            allowed_openai_params:
+            - max_retries
+            - reasoning_effort
+        REASONING:
+        - model_name: Hermes ten fallback mistral-large-4 key2
+          litellm_params:
+            reasoning_effort: low
+            allowed_openai_params:
+            - max_retries
+            - reasoning_effort
+- model_name: Hermes ten fallback beam
+  model_info:
+    mode: chat
+  litellm_params:
+    model: auto_router/complexity_router
+    complexity_router_default_model: Hermes ten fallback beam
+    complexity_router_config:
+      classifier_type: heuristic
+      default_model: Hermes ten fallback beam
+      enable_non_reasoning_tier: false
+      tiers:
+        SIMPLE: Hermes ten fallback beam
+        MEDIUM: Hermes ten fallback beam
+        COMPLEX: Hermes ten fallback beam
+        REASONING: Hermes ten fallback beam
+      tier_model_configs:
+        SIMPLE:
+        - model_name: Hermes ten fallback beam
+          litellm_params:
+            reasoning_effort: medium
+            allowed_openai_params:
+            - max_retries
+            - reasoning_effort
+        MEDIUM:
+        - model_name: Hermes ten fallback beam
+          litellm_params:
+            reasoning_effort: medium
+            allowed_openai_params:
+            - max_retries
+            - reasoning_effort
+        COMPLEX:
+        - model_name: Hermes ten fallback beam
+          litellm_params:
+            reasoning_effort: medium
+            allowed_openai_params:
+            - max_retries
+            - reasoning_effort
+        REASONING:
+        - model_name: Hermes ten fallback beam
+          litellm_params:
+            reasoning_effort: medium
+            allowed_openai_params:
+            - max_retries
+            - reasoning_effort
 router_settings:
   num_retries: 1
   retry_policy:
     RateLimitErrorRetries: 0
-  max_fallbacks: 8
+    TimeoutErrorRetries: 0
+  max_fallbacks: 18
   fallbacks:
-  - Hermes fallback ultra key1:
-    - Hermes fallback ultra key2
-  - Hermes fallback ultra key2:
-    - Hermes fallback super-vl key1
-  - Hermes fallback super-vl key1:
-    - Hermes fallback super-vl key2
-  - Hermes fallback super-vl key2:
-    - Hermes fallback minimax key1
-  - Hermes fallback minimax key1:
-    - Hermes fallback minimax key2
-  - Hermes fallback minimax key2:
-    - Hermes fallback muse key1
-  - Hermes fallback muse key1:
-    - Hermes fallback muse key2
-  - Hermes fallback muse key2:
-    - Hermes fallback beam
+  - Hermes ten fallback ultra key1:
+    - Hermes ten fallback ultra key2
+  - Hermes ten fallback ultra key2:
+    - Hermes ten fallback super-vl key1
+  - Hermes ten fallback super-vl key1:
+    - Hermes ten fallback super-vl key2
+  - Hermes ten fallback super-vl key2:
+    - Hermes ten fallback minimax key1
+  - Hermes ten fallback minimax key1:
+    - Hermes ten fallback minimax key2
+  - Hermes ten fallback minimax key2:
+    - Hermes ten fallback muse key1
+  - Hermes ten fallback muse key1:
+    - Hermes ten fallback muse key2
+  - Hermes ten fallback muse key2:
+    - Hermes ten fallback gpt-oss-20b key1
+  - Hermes ten fallback gpt-oss-20b key1:
+    - Hermes ten fallback gpt-oss-20b key2
+  - Hermes ten fallback gpt-oss-20b key2:
+    - Hermes ten fallback diffusion-gemma key1
+  - Hermes ten fallback diffusion-gemma key1:
+    - Hermes ten fallback diffusion-gemma key2
+  - Hermes ten fallback diffusion-gemma key2:
+    - Hermes ten fallback nano-omni key1
+  - Hermes ten fallback nano-omni key1:
+    - Hermes ten fallback nano-omni key2
+  - Hermes ten fallback nano-omni key2:
+    - Hermes ten fallback mistral-large-4 key1
+  - Hermes ten fallback mistral-large-4 key1:
+    - Hermes ten fallback mistral-large-4 key2
+  - Hermes ten fallback mistral-large-4 key2:
+    - Hermes ten fallback lightning key1
+  - Hermes ten fallback lightning key1:
+    - Hermes ten fallback lightning key2
+  - Hermes ten fallback lightning key2:
+    - Hermes ten fallback beam
   - Hermes Kanban:
-    - Hermes fallback ultra key2
+    - Hermes ten fallback ultra key2
   context_window_fallbacks:
-  - Hermes fallback muse key1:
-    - Hermes fallback beam
-  - Hermes fallback muse key2:
-    - Hermes fallback beam
+  - Hermes ten fallback gpt-oss-20b key2:
+    - Hermes ten fallback diffusion-gemma key1
+  - Hermes ten fallback gpt-oss-20b key1:
+    - Hermes ten fallback diffusion-gemma key1
+  - Hermes ten fallback muse key2:
+    - Hermes ten fallback diffusion-gemma key1
+  - Hermes ten fallback muse key1:
+    - Hermes ten fallback diffusion-gemma key1

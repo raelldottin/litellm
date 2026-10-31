@@ -643,6 +643,7 @@ def main() -> None:
         "max_tokens",
         "max_completion_tokens",
         "reasoning_effort",
+        "reasoning_budget",
         "chat_template_kwargs",
         "extra_body",
     }
